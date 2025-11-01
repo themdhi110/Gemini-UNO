@@ -1,3 +1,4 @@
+
 import type { Card, Player, PublicGameState, AIMove, CardColor } from '../types';
 
 export class GameEngine {
@@ -10,12 +11,10 @@ export class GameEngine {
   private changeCb: ((state: PublicGameState) => void) | null = null;
   private isGameOver: boolean = false;
   private winner: string | null = null;
-  private shoutedUno: boolean[] = [];
-  private wildColorChoicePending: boolean = false;
+  private isAwaitingColorChoice: boolean = false;
+  private chosenColor: CardColor | null = null;
 
-  constructor() {
-    this.players = [{ name: 'You', isAi: false }, { name: 'Bot 1', isAi: true }, { name: 'Bot 2', isAi: true }];
-  }
+  constructor() { }
 
   onChange(cb: (state: PublicGameState) => void) { this.changeCb = cb; }
 
@@ -23,60 +22,79 @@ export class GameEngine {
     if (this.changeCb) this.changeCb(this.getPublicState());
   }
 
-  init() {
+  init(playerNames: string[] = ['You', 'Bot 1', 'Bot 2']) {
+    this.players = playerNames.map((name, i) => ({ name, isAi: i !== 0 }));
     this.drawPile = this._makeDeck();
     this._shuffle(this.drawPile);
     this.hands = this.players.map(() => this._drawMultiple(7));
-    this.discardPile = [this.drawPile.pop()!];
-    // Ensure the first card is not a wild card to avoid initial color choice
-    while (this.discardPile[0].color === 'black') {
-        this.drawPile.push(this.discardPile.pop()!);
-        this._shuffle(this.drawPile);
-        this.discardPile.push(this.drawPile.pop()!);
+    
+    let topCard = this.drawPile.pop()!;
+    // Starting card cannot be a wild card
+    while(topCard.color === 'black') {
+      this.drawPile.push(topCard);
+      this._shuffle(this.drawPile);
+      topCard = this.drawPile.pop()!;
     }
+    this.discardPile = [topCard];
+
     this.currentPlayerIndex = 0;
     this.direction = 1;
     this.isGameOver = false;
     this.winner = null;
-    this.shoutedUno = this.players.map(() => false);
-    this.wildColorChoicePending = false;
+    this.isAwaitingColorChoice = false;
+    this.chosenColor = null;
+
     this.emit();
   }
 
   getPublicState(): PublicGameState {
-    const state = {
+    const realTopCard = this.discardPile[this.discardPile.length - 1];
+    let topCardForState = realTopCard;
+    if (realTopCard.color === 'black' && this.chosenColor) {
+        topCardForState = { ...realTopCard, color: this.chosenColor };
+    }
+
+    return {
       players: this.players.map((p, i) => ({ ...p, cardCount: this.hands[i].length })),
-      playerHand: this.players[this.currentPlayerIndex].isAi ? this.hands[this.currentPlayerIndex] : this.hands[0],
+      playerHand: this.hands[0],
       opponentHands: this.hands.slice(1).map(hand => hand.length),
-      topCard: this.discardPile[this.discardPile.length - 1],
+      topCard: topCardForState,
       drawCount: this.drawPile.length,
       currentPlayerIndex: this.currentPlayerIndex,
       isPlayerTurn: this.currentPlayerIndex === 0,
       currentPlayerIsAi: this.players[this.currentPlayerIndex].isAi,
       isGameOver: this.isGameOver,
       winner: this.winner,
-      shoutedUno: this.shoutedUno,
-      isWildColorChoicePending: this.wildColorChoicePending && this.currentPlayerIndex === 0,
+      isAwaitingColorChoice: this.isAwaitingColorChoice,
     };
-
-    if (state.currentPlayerIsAi) {
-        state.playerHand = this.hands[this.currentPlayerIndex];
-    } else {
-        state.playerHand = this.hands[0];
-    }
-    
-    return state;
+  }
+  
+  getHandForPlayer(playerIndex: number): Card[] {
+    return this.hands[playerIndex];
   }
 
   private _makeDeck(): Card[] {
     const colors: ('red' | 'green' | 'blue' | 'yellow')[] = ['red', 'green', 'blue', 'yellow'];
     const deck: Card[] = [];
     colors.forEach(color => {
-      for (let n = 0; n <= 9; n++) deck.push({ color, type: 'number', value: n });
-      ['skip', 'reverse', 'draw2'].forEach(t => deck.push({ color, type: t as any }));
+      // One 0 card
+      deck.push({ color, type: 'number', value: 0 });
+      // Two of each number 1-9
+      for (let n = 1; n <= 9; n++) {
+        deck.push({ color, type: 'number', value: n });
+        deck.push({ color, type: 'number', value: n });
+      }
+      // Two of each action card
+      ['skip', 'reverse', 'draw2'].forEach(t => {
+        deck.push({ color, type: t as any });
+        deck.push({ color, type: t as any });
+      });
     });
-    for (let i = 0; i < 4; i++) deck.push({ color: 'black', type: 'wild' });
-    for (let i = 0; i < 4; i++) deck.push({ color: 'black', type: 'wild_draw4' });
+    // Four of each wild card
+    for (let i = 0; i < 4; i++) {
+      deck.push({ color: 'black', type: 'wild' });
+      deck.push({ color: 'black', type: 'wild_draw4' });
+    }
     return deck;
   }
 
@@ -92,13 +110,61 @@ export class GameEngine {
   }
 
   playCard(cardIndex: number) {
-    if (this.isGameOver || this.currentPlayerIndex !== 0 || this.wildColorChoicePending) return;
-
+    if (this.isGameOver || this.isAwaitingColorChoice) return;
     const card = this.hands[this.currentPlayerIndex][cardIndex];
     if (!card || !this._isPlayable(card)) return;
 
-    this.discardPile.push(this.hands[this.currentPlayerIndex].splice(cardIndex, 1)[0]);
+    this.discardPile.push(card);
+    this.hands[this.currentPlayerIndex].splice(cardIndex, 1);
+    this.chosenColor = null;
     
+    if(this.hands[this.currentPlayerIndex].length === 0) {
+        this.isGameOver = true;
+        this.winner = this.players[this.currentPlayerIndex].name;
+        this.emit();
+        return;
+    }
+
+    if (card.color === 'black') {
+        this.isAwaitingColorChoice = true;
+    } else {
+        this._applyCardEffect(card);
+        this._advanceTurn(card);
+    }
+    this.emit();
+  }
+  
+  playerChoseColor(color: CardColor) {
+    if (!this.isAwaitingColorChoice || this.players[this.currentPlayerIndex].isAi) return;
+    this.chosenColor = color;
+    this.isAwaitingColorChoice = false;
+
+    const card = this.discardPile[this.discardPile.length - 1];
+    this._applyCardEffect(card);
+    this._advanceTurn(card);
+    this.emit();
+  }
+
+  applyAiMove(move: AIMove) {
+    if (this.isGameOver || !this.players[this.currentPlayerIndex].isAi) return;
+    if (move.type === 'draw') {
+        this.drawCard();
+        return;
+    }
+
+    if (typeof move.cardIndex !== 'number') return;
+    
+    const card = this.hands[this.currentPlayerIndex][move.cardIndex];
+    if(!card || !this._isPlayable(card)) {
+        console.warn("AI made an invalid move. Drawing instead.");
+        this.drawCard();
+        return;
+    }
+    
+    this.discardPile.push(card);
+    this.hands[this.currentPlayerIndex].splice(move.cardIndex, 1);
+    this.chosenColor = null;
+
     if (this.hands[this.currentPlayerIndex].length === 0) {
         this.isGameOver = true;
         this.winner = this.players[this.currentPlayerIndex].name;
@@ -106,133 +172,40 @@ export class GameEngine {
         return;
     }
 
-    if (this.hands[this.currentPlayerIndex].length > 1) {
-        this.shoutedUno[this.currentPlayerIndex] = false;
+    if (card.color === 'black') {
+        this.chosenColor = move.chosenColor || ['red', 'green', 'blue', 'yellow'][Math.floor(Math.random() * 4)] as CardColor;
     }
 
-    if (card.type === 'wild' || card.type === 'wild_draw4') {
-        this.wildColorChoicePending = true;
-        this.emit(); // Wait for player to choose a color
-    } else {
-        this._applyCardEffect(card);
-        this._advanceTurn();
-        this.emit();
-    }
-  }
-
-  playerChoosesColor(color: 'red' | 'green' | 'blue' | 'yellow') {
-    if (!this.wildColorChoicePending || this.currentPlayerIndex !== 0) return;
-
-    const wildCard = this.discardPile[this.discardPile.length - 1];
-    if (wildCard.type !== 'wild' && wildCard.type !== 'wild_draw4') return;
-
-    wildCard.color = color;
-    this.wildColorChoicePending = false;
-
-    this._applyCardEffect(wildCard);
-    this._advanceTurn();
+    this._applyCardEffect(card);
+    this._advanceTurn(card);
     this.emit();
-  }
-
-  applyAiMove(move: AIMove) {
-    if (this.isGameOver || !this.players[this.currentPlayerIndex].isAi) return;
-    
-    if (move.shoutUno) {
-        this.shoutedUno[this.currentPlayerIndex] = true;
-    }
-
-    if (move.type === 'play' && typeof move.cardIndex === 'number') {
-      const card = this.hands[this.currentPlayerIndex][move.cardIndex];
-      if (!card || !this._isPlayable(card)) {
-          console.warn("AI attempted invalid move. Drawing instead.");
-          this.drawCard();
-          return;
-      }
-      
-      this.discardPile.push(this.hands[this.currentPlayerIndex].splice(move.cardIndex, 1)[0]);
-
-      if (this.hands[this.currentPlayerIndex].length === 0) {
-        this.isGameOver = true;
-        this.winner = this.players[this.currentPlayerIndex].name;
-        this.emit();
-        return;
-      }
-
-      if (this.hands[this.currentPlayerIndex].length > 1) {
-        this.shoutedUno[this.currentPlayerIndex] = false;
-      }
-
-      if (card.type === 'wild' || card.type === 'wild_draw4') {
-        if (move.chosenColor && ['red', 'green', 'blue', 'yellow'].includes(move.chosenColor)) {
-          card.color = move.chosenColor;
-        } else {
-          const colorCounts: { [key: string]: number } = { red: 0, green: 0, blue: 0, yellow: 0 };
-          this.hands[this.currentPlayerIndex].forEach(c => {
-            if (c.color !== 'black') colorCounts[c.color]++;
-          });
-          const bestColor = Object.keys(colorCounts).reduce((a, b) => colorCounts[a] > colorCounts[b] ? a : b, 'red');
-          card.color = bestColor as CardColor;
-        }
-      }
-
-      this._applyCardEffect(card);
-      this._advanceTurn();
-      this.emit();
-    } else {
-      this.drawCard();
-    }
   }
 
   drawCard() {
-    if (this.isGameOver || this.wildColorChoicePending) return;
+    if (this.isGameOver || this.isAwaitingColorChoice) return;
     if (this.drawPile.length === 0) this._reshuffleDiscard();
-    if (this.drawPile.length > 0) {
+    if(this.drawPile.length > 0) {
         const c = this.drawPile.pop()!;
         this.hands[this.currentPlayerIndex].push(c);
     }
-    this.shoutedUno[this.currentPlayerIndex] = false;
-    this._advanceTurn();
+    this._advanceTurn(); // Passing no card means default advancement
     this.emit();
   }
   
-  playerShoutsUno() {
-    if (this.hands[0].length === 1) {
-        this.shoutedUno[0] = true;
-        this.emit();
-    }
-  }
-
-  callOutAndPenalize(targetIndex: number) {
-    if (this.hands[targetIndex].length === 1 && !this.shoutedUno[targetIndex]) {
-        this.hands[targetIndex].push(...this._drawMultiple(2));
-        this.shoutedUno[targetIndex] = false;
-        this.emit();
-    }
-  }
-
   private _applyCardEffect(card: Card) {
-      if (card.type === 'reverse') {
+      const nextPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
+      if (card.type === 'draw2') {
+          this.hands[nextPlayerIndex].push(...this._drawMultiple(2));
+      } else if (card.type === 'wild_draw4') {
+          this.hands[nextPlayerIndex].push(...this._drawMultiple(4));
+      } else if (card.type === 'reverse') {
           this.direction *= -1;
-      } else if (card.type === 'skip') {
-          this._advanceTurn();
-      } else if (card.type === 'draw2' || card.type === 'wild_draw4') {
-          const nextPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
-          const cardsToDraw = card.type === 'draw2' ? 2 : 4;
-          this.hands[nextPlayerIndex].push(...this._drawMultiple(cardsToDraw));
-          this.shoutedUno[nextPlayerIndex] = false;
       }
   }
 
   private _reshuffleDiscard() {
     const top = this.discardPile.pop();
     if (!top) return;
-    
-    this.discardPile.forEach(card => {
-        if (card.type === 'wild' || card.type === 'wild_draw4') {
-            card.color = 'black';
-        }
-    });
-
     this.drawPile = this.discardPile;
     this.discardPile = [top];
     this._shuffle(this.drawPile);
@@ -240,8 +213,27 @@ export class GameEngine {
 
   private _isPlayable(card: Card): boolean {
     const top = this.discardPile[this.discardPile.length - 1];
-    return card.color === 'black' || card.color === top.color || (card.type === 'number' && top.type === 'number' && card.value === top.value);
+    const effectiveTopColor = this.chosenColor || top.color;
+    
+    if (card.color === 'black') return true;
+    if (card.color === effectiveTopColor) return true;
+    if (card.type !== 'number' && card.type === top.type) return true;
+    if (card.type === 'number' && top.type === 'number' && card.value === top.value) return true;
+    
+    return false;
   }
 
-  private _advanceTurn() { this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length; }
+  private _advanceTurn(playedCard?: Card) {
+    let increment = 1;
+    if(playedCard) {
+        if (playedCard.type === 'skip' || playedCard.type === 'draw2' || playedCard.type === 'wild_draw4') {
+            increment = 2; // The player who draws or is skipped effectively loses their turn.
+        }
+    }
+
+    // This loop handles reverse direction correctly.
+    for (let i = 0; i < increment; i++) {
+        this.currentPlayerIndex = (this.currentPlayerIndex + this.direction + this.players.length) % this.players.length;
+    }
+  }
 }

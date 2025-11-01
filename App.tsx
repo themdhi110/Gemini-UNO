@@ -1,8 +1,10 @@
-import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { GameEngine } from './services/gameEngine';
-import { requestAiMove } from './services/aiService';
+import { requestAiMove, requestAiChatMessage } from './services/aiService';
 import CardComponent from './components/Card';
-import type { PublicGameState, Card } from './types';
+import ColorPicker from './components/ColorPicker';
+import type { PublicGameState, Card, CardColor, ChatMessage, AIMove } from './types';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const PlayerIcon = () => (
@@ -18,53 +20,57 @@ const BotIcon = () => (
     </svg>
 );
 
-const ColorPicker = ({ onSelect }: { onSelect: (color: 'red' | 'green' | 'blue' | 'yellow') => void }) => {
-    const colors: ('red' | 'green' | 'blue' | 'yellow')[] = ['red', 'green', 'blue', 'yellow'];
-    const colorClasses = {
-        red: 'bg-red-600 hover:bg-red-500',
-        green: 'bg-green-600 hover:bg-green-500',
-        blue: 'bg-blue-600 hover:bg-blue-500',
-        yellow: 'bg-yellow-500 hover:bg-yellow-400',
-    };
-  
-    return (
-      <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="absolute inset-0 bg-black/70 flex items-center justify-center z-50"
-      >
-          <div className="bg-gray-700 p-6 rounded-xl shadow-2xl text-center">
-              <h3 className="text-2xl font-bold mb-4">Choose a color</h3>
-              <div className="grid grid-cols-2 gap-4">
-                  {colors.map(color => (
-                      <motion.button
-                          key={color}
-                          onClick={() => onSelect(color)}
-                          className={`w-24 h-24 rounded-lg ${colorClasses[color]}`}
-                          aria-label={`Choose ${color}`}
-                          whileHover={{ scale: 1.1 }}
-                          whileTap={{ scale: 0.95 }}
-                      />
-                  ))}
-              </div>
-          </div>
-      </motion.div>
-    );
-};
+const ChatBox: React.FC<{ messages: ChatMessage[], typingUser: string | null }> = ({ messages, typingUser }) => (
+    <div className="absolute top-28 left-4 w-72 h-1/2 bg-black/30 backdrop-blur-sm rounded-lg p-3 flex flex-col space-y-2 shadow-lg">
+        <h3 className="font-bold border-b border-gray-500 pb-2 text-lg">Game Chat</h3>
+        <div className="flex-grow overflow-y-auto pr-2">
+            <AnimatePresence>
+                {messages.map((msg, i) => (
+                    <motion.div
+                        key={i}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="mb-2"
+                    >
+                        <span className="font-bold text-yellow-300">{msg.sender}: </span>
+                        <span className="text-gray-200">{msg.text}</span>
+                    </motion.div>
+                ))}
+            </AnimatePresence>
+        </div>
+        {typingUser && (
+            <div className="flex-shrink-0 text-gray-400 italic">
+                {typingUser} is typing...
+            </div>
+        )}
+    </div>
+);
+
 
 export default function App() {
   const [engine] = useState(() => new GameEngine());
   const [state, setState] = useState<PublicGameState | null>(null);
   const [isAiThinking, setIsAiThinking] = useState(false);
-  const [unoCalloutTarget, setUnoCalloutTarget] = useState<number | null>(null);
-  const [playerNeedsToShout, setPlayerNeedsToShout] = useState(false);
-  const penaltyTimerRef = useRef<number | null>(null);
-  const prevStateRef = useRef<PublicGameState | null>(null);
+  const [gamePhase, setGamePhase] = useState<'lobby' | 'searching' | 'playing'>('lobby');
+  const [playerNames, setPlayerNames] = useState<string[]>(['You', '', '']);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isAiChatting, setIsAiChatting] = useState<string | null>(null);
 
   useEffect(() => {
-    prevStateRef.current = state;
-  }, [state]);
+    const prefixes = ['Cyber', 'Quantum', 'Data', 'Pixel', 'Glitch', 'Logic', 'Void', 'Hex'];
+    const suffixes = ['Ninja', 'Ghost', 'Wraith', 'Prowler', 'Gambit', 'Slinger', 'Runner', 'Jester'];
+    const randomName = () => `${prefixes[Math.floor(Math.random() * prefixes.length)]}${suffixes[Math.floor(Math.random() * suffixes.length)]}${Math.floor(Math.random() * 90) + 10}`;
+    setPlayerNames(['You', randomName(), randomName()]);
+  }, []);
+
+  const handleStartGame = () => {
+    setGamePhase('searching');
+    setChatMessages([]);
+    setTimeout(() => {
+        engine.init(playerNames);
+        setGamePhase('playing');
+    }, 3000);
+  };
 
   useEffect(() => {
     engine.onChange((s) => {
@@ -75,112 +81,124 @@ export default function App() {
             setIsAiThinking(false);
         }
     });
-    engine.init();
   }, [engine]);
 
-  useEffect(() => {
-    if (!state || !prevStateRef.current) return;
-    const prevState = prevStateRef.current;
-
-    state.players.forEach((player, index) => {
-        const prevCardCount = prevState.players[index]?.cardCount;
-        if (prevCardCount === 2 && player.cardCount === 1) {
-            if (index === 0) { // Human player
-                setPlayerNeedsToShout(true);
-                penaltyTimerRef.current = window.setTimeout(() => {
-                    setPlayerNeedsToShout(false);
-                    engine.callOutAndPenalize(0);
-                }, 2500);
-            } else { // AI player
-                if (!state.shoutedUno[index]) {
-                    setUnoCalloutTarget(index);
-                    setTimeout(() => setUnoCalloutTarget(null), 2500);
-                }
-            }
-        }
-    });
-
-    return () => {
-        if (penaltyTimerRef.current) {
-            clearTimeout(penaltyTimerRef.current);
-        }
-    };
-  }, [state, engine]);
-
   const handleAiTurn = useCallback(async (currentState: PublicGameState) => {
-    const move = await requestAiMove(currentState);
-    if (move.shoutUno) {
-        const forgets = Math.random() < 0.2; // 20% chance AI forgets
-        if (forgets) delete move.shoutUno;
+    const aiHand = engine.getHandForPlayer(currentState.currentPlayerIndex);
+    const move = await requestAiMove(currentState, aiHand);
+    const playerName = currentState.players[currentState.currentPlayerIndex].name;
+    
+    let moveDescription = '';
+    if (move.type === 'play' && typeof move.cardIndex === 'number') {
+        const card = aiHand[move.cardIndex];
+        moveDescription = `played a ${card.color} ${card.type}${card.value ? ` ${card.value}`: ''}`;
+        if (card.color === 'black' && move.chosenColor) {
+            moveDescription += ` and chose ${move.chosenColor}`;
+        }
+    } else {
+        moveDescription = 'drew a card';
     }
+
     engine.applyAiMove(move);
+    setIsAiChatting(playerName);
+    
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 800));
+        
+    try {
+        const newState = engine.getPublicState();
+        const chatText = await requestAiChatMessage(playerName, moveDescription, newState);
+        if(chatText && chatText.length > 1) {
+            setChatMessages(prev => [...prev, { sender: playerName, text: chatText }]);
+        }
+    } finally {
+        setIsAiChatting(null);
+    }
   }, [engine]);
 
   useEffect(() => {
     if (state?.currentPlayerIsAi && !state.isGameOver) {
       const timeoutId = setTimeout(() => {
         handleAiTurn(state);
-      }, 1500);
+      }, Math.random() * 1500 + 1000);
       return () => clearTimeout(timeoutId);
     }
   }, [state, handleAiTurn]);
 
   const onPlayCard = (cardIndex: number) => {
-    if(state?.isPlayerTurn && !state.isWildColorChoicePending) {
+    if(state?.isPlayerTurn) {
         engine.playCard(cardIndex);
     }
   };
   
   const onDrawCard = () => {
-    if(state?.isPlayerTurn && !state.isWildColorChoicePending) {
+    if(state?.isPlayerTurn) {
         engine.drawCard();
     }
   }
-
-  const handleShoutUno = () => {
-      if (penaltyTimerRef.current) {
-          clearTimeout(penaltyTimerRef.current);
-          penaltyTimerRef.current = null;
-      }
-      setPlayerNeedsToShout(false);
-      engine.playerShoutsUno();
-  };
-
-  const handleCallOut = (targetIndex: number) => {
-      engine.callOutAndPenalize(targetIndex);
-      setUnoCalloutTarget(null);
-  };
-
-  const handleColorSelect = (color: 'red' | 'green' | 'blue' | 'yellow') => {
-    engine.playerChoosesColor(color);
+  
+  const onColorSelect = (color: CardColor) => {
+    engine.playerChoseColor(color);
   }
 
   const getPlayerStatus = (playerIndex: number) => {
     if (!state) return '';
     if (state.currentPlayerIndex === playerIndex) {
-      if (state.currentPlayerIsAi && isAiThinking) return "Thinking...";
+      if (state.currentPlayerIsAi && isAiThinking) {
+        return "Thinking...";
+      }
       return "Active Turn";
     }
     return "Waiting...";
   };
 
   const getPlayerStatusColor = (playerIndex: number) => {
-    if(state?.currentPlayerIndex === playerIndex) return "text-yellow-400";
+    if(state?.currentPlayerIndex === playerIndex) return "text-yellow-300";
     return "text-gray-400";
   }
 
-  const opponents = useMemo(() => state?.players.filter((_, i) => i !== 0) || [], [state]);
+  if (gamePhase === 'lobby' || gamePhase === 'searching') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 bg-[radial-gradient(#4b5563_1px,transparent_1px)] [background-size:24px_24px] text-white">
+        <h1 className="text-6xl font-bold text-white tracking-wider drop-shadow-[0_0_15px_rgba(74,222,128,0.5)] mb-8">Gemini UNO: Online Arena</h1>
+        <div className="bg-black/30 backdrop-blur-sm p-8 rounded-lg w-full max-w-md text-center">
+            <h2 className="text-2xl font-semibold mb-6">Players in Lobby</h2>
+            <div className="space-y-4 mb-8">
+                {playerNames.map((name, i) => (
+                    <div key={name} className="flex items-center justify-between bg-gray-800/50 p-3 rounded-md">
+                        <div className="flex items-center space-x-3">
+                            {i === 0 ? <PlayerIcon /> : <BotIcon />}
+                            <span className="text-lg font-medium">{name}</span>
+                        </div>
+                        <span className="text-green-400 font-semibold">Online</span>
+                    </div>
+                ))}
+            </div>
+            {gamePhase === 'lobby' ? (
+                <button onClick={handleStartGame} className="w-full px-6 py-4 rounded-lg bg-emerald-600 text-white font-bold text-xl hover:bg-emerald-500 transition-all transform hover:scale-105 shadow-[0_0_20px_rgba(74,222,128,0.4)]">
+                    Find Match
+                </button>
+            ) : (
+                <div className="text-xl font-semibold text-yellow-300 animate-pulse">
+                    Searching for match...
+                </div>
+            )}
+        </div>
+      </div>
+    );
+  }
 
   if (!state) {
     return (
         <div className="flex items-center justify-center min-h-screen bg-gray-900">
-            <h1 className="text-4xl font-bold animate-pulse">Loading UNO...</h1>
+            <h1 className="text-4xl font-bold animate-pulse">Loading Game...</h1>
         </div>
     );
   }
+  
+  const opponents = state.players.filter((_, i) => i !== 0);
 
   return (
-    <div className="flex flex-col min-h-screen p-4 bg-gray-800 from-gray-900 to-gray-800 font-sans">
+    <div className="relative flex flex-col min-h-screen p-4 bg-gray-900 bg-[radial-gradient(#4b5563_1px,transparent_1px)] [background-size:24px_24px] font-sans overflow-hidden">
       
       <AnimatePresence>
         {state.isGameOver && (
@@ -188,108 +206,100 @@ export default function App() {
             initial={{ opacity: 0, scale: 0.5 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black/70 flex items-center justify-center z-50"
+            className="absolute inset-0 bg-black/80 flex items-center justify-center z-50"
           >
             <div className="bg-gray-700 p-8 rounded-xl shadow-2xl text-center">
               <h2 className="text-4xl font-bold mb-4">{state.winner} Wins!</h2>
               <button
                 className="px-6 py-3 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-500 transition-colors"
-                onClick={() => engine.init()}
+                onClick={handleStartGame}
               >
-                Play Again
+                Find New Match
               </button>
             </div>
           </motion.div>
         )}
-        {state.isWildColorChoicePending && <ColorPicker onSelect={handleColorSelect} />}
+        {state.isAwaitingColorChoice && state.isPlayerTurn && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <ColorPicker onColorSelect={onColorSelect} />
+          </motion.div>
+        )}
       </AnimatePresence>
+      
+      <ChatBox messages={chatMessages} typingUser={isAiChatting} />
 
-      <div className="absolute inset-0 z-40 pointer-events-none flex items-center justify-center">
-        <AnimatePresence>
-            {playerNeedsToShout && (
-                <motion.button 
-                    initial={{ opacity: 0, y: 50 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 50 }}
-                    className="pointer-events-auto px-10 py-6 bg-yellow-500 text-gray-900 font-black text-4xl rounded-2xl shadow-lg hover:bg-yellow-400 transform hover:scale-105 transition-all"
-                    onClick={handleShoutUno}>
-                    SHOUT UNO!
-                </motion.button>
-            )}
-            {unoCalloutTarget !== null && (
-                 <motion.button 
-                    initial={{ opacity: 0, y: 50 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 50 }}
-                    className="pointer-events-auto px-8 py-5 bg-red-600 text-white font-bold text-2xl rounded-2xl shadow-lg hover:bg-red-500 transform hover:scale-105 transition-all"
-                    onClick={() => handleCallOut(unoCalloutTarget)}>
-                    Call Out {state.players[unoCalloutTarget].name}!
-                 </motion.button>
-            )}
-        </AnimatePresence>
-      </div>
-
-      <header className="flex justify-between items-center mb-4">
-        <h1 className="text-3xl font-bold text-white tracking-wider">Gemini UNO</h1>
-        <div className="flex space-x-4">
-          {opponents.map((p, i) => {
-            const playerIndex = i + 1;
-            return (
-             <div key={p.name} className={`relative flex items-center space-x-2 p-2 rounded-lg transition-all duration-300 ${state.currentPlayerIndex === playerIndex ? 'bg-yellow-500/20 ring-2 ring-yellow-500' : 'bg-gray-700'}`}>
-                {state.opponentHands[i] === 1 && state.shoutedUno[playerIndex] && (
-                    <motion.div initial={{scale:0}} animate={{scale:1}} className="absolute -top-2 -right-2 text-xs font-bold text-gray-900 bg-yellow-400 px-2 py-1 rounded-full shadow-md">UNO!</motion.div>
-                )}
-                <BotIcon />
-                <div className="text-left">
-                  <span className="font-semibold block">{p.name}</span>
-                  <span className="text-sm text-gray-300">{state.opponentHands[i]} cards</span>
-                  <span className={`text-xs block ${getPlayerStatusColor(playerIndex)}`}>{getPlayerStatus(playerIndex)}</span>
+      <header className="relative w-full flex justify-center items-start mb-4 h-24">
+        <h1 className="absolute top-0 left-4 text-3xl font-bold text-white tracking-wider drop-shadow-[0_0_10px_rgba(255,255,255,0.3)]">Gemini UNO</h1>
+        <div className="flex space-x-8">
+          {opponents.map((p, i) => (
+             <div key={p.name} className={`relative flex flex-col items-center space-y-1 p-3 rounded-lg transition-all duration-300 w-48 ${state.currentPlayerIndex === (i+1) ? 'bg-yellow-500/20 ring-2 ring-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.5)]' : 'bg-black/30'}`}>
+                <div className="flex items-center space-x-2">
+                  <BotIcon />
+                  <div className="text-left">
+                    <span className="font-semibold block">{p.name}</span>
+                    <span className={`text-xs block ${getPlayerStatusColor(i+1)}`}>{getPlayerStatus(i+1)}</span>
+                  </div>
+                </div>
+                <div className="flex -space-x-4">
+                  {Array.from({ length: state.opponentHands[i] }).map((_, cardIdx) => (
+                    <div key={cardIdx} style={{ transform: `rotate(${cardIdx*5-((state.opponentHands[i]-1)*2.5)}deg)`}}>
+                      <CardComponent isCardBack={true} compact={true} />
+                    </div>
+                  ))}
                 </div>
             </div>
-          )})}
+          ))}
         </div>
       </header>
 
-      <main className="flex-grow flex items-center justify-center relative">
+      <main className="flex-grow flex items-center justify-center relative my-4">
         <div className="flex items-center space-x-8">
             <div className="flex flex-col items-center space-y-2">
-                <p className="font-semibold">Draw Pile</p>
-                 <button onClick={onDrawCard} disabled={!state.isPlayerTurn || isAiThinking || state.isWildColorChoicePending}>
+                <p className="font-semibold text-lg drop-shadow-md">Draw Pile</p>
+                 <button onClick={onDrawCard} disabled={!state.isPlayerTurn || isAiThinking || state.isAwaitingColorChoice} className="transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
                     <CardComponent isCardBack={true}/>
                 </button>
-                <span className="text-sm text-gray-400">{state.drawCount} cards left</span>
+                <span className="text-sm text-gray-300">{state.drawCount} cards left</span>
             </div>
             <div className="flex flex-col items-center space-y-2">
-                <p className="font-semibold">Discard Pile</p>
+                <p className="font-semibold text-lg drop-shadow-md">Discard Pile</p>
                 <CardComponent card={state.topCard} />
             </div>
         </div>
       </main>
 
-      <footer className="mt-4">
+      <footer className="mt-auto h-48">
         <div className="flex flex-col items-center">
-          <div className={`relative flex items-center space-x-3 mb-4 p-3 rounded-lg transition-all duration-300 ${state.isPlayerTurn ? 'bg-green-500/20 ring-2 ring-green-500' : 'bg-gray-700'}`}>
-            {state.playerHand.length === 1 && state.shoutedUno[0] && (
-                <motion.div initial={{scale:0}} animate={{scale:1}} className="absolute -top-2 -right-2 text-xs font-bold text-gray-900 bg-yellow-400 px-2 py-1 rounded-full shadow-md">UNO!</motion.div>
-            )}
+          <div className={`flex items-center space-x-3 mb-4 p-3 rounded-lg transition-all duration-300 ${state.isPlayerTurn ? 'bg-green-500/20 ring-2 ring-green-400 shadow-[0_0_15px_rgba(74,222,128,0.5)]' : 'bg-black/30'}`}>
             <PlayerIcon />
             <div>
               <h2 className="text-xl font-bold">{state.players[0].name}</h2>
               <span className={`text-sm ${getPlayerStatusColor(0)}`}>{getPlayerStatus(0)}</span>
             </div>
           </div>
-          <div className="flex justify-center items-end h-40 w-full px-4">
+          <div className="relative flex justify-center items-end h-40 w-full px-4">
             <AnimatePresence>
             {state.playerHand.map((c, i) => (
               <motion.div
                 key={`${c.color}-${c.type}-${c.value}-${i}`}
-                initial={{ opacity: 0, y: 50, scale: 0.5 }}
-                animate={{ opacity: 1, y: 0, scale: 1, transition: { delay: i * 0.05 } }}
+                layout
+                initial={{ opacity: 0, y: 50, rotate: 0 }}
+                animate={{ 
+                  opacity: 1, 
+                  y: 0, 
+                  x: (i - state.playerHand.length / 2) * 40,
+                  rotate: (i - state.playerHand.length / 2) * 5,
+                  transition: { type: 'spring', stiffness: 300, damping: 20 }
+                }}
                 exit={{ opacity: 0, y: 20, scale: 0.8 }}
-                whileHover={{ y: -20, scale: 1.05, zIndex: 10 }}
-                className={`cursor-pointer -mx-3 ${state.isWildColorChoicePending ? 'opacity-50 pointer-events-none' : ''}`}
+                whileHover={{ y: -25, scale: 1.1, zIndex: 10, rotate: 0 }}
+                className={`absolute cursor-pointer`}
                 onClick={() => onPlayCard(i)}
-                style={{ originX: 0.5, originY: 1 }}
+                style={{ originY: 1 }}
                 >
                 <CardComponent card={c} />
               </motion.div>

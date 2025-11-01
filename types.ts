@@ -1,3 +1,4 @@
+
 export type CardColor = 'red' | 'green' | 'blue' | 'yellow' | 'black';
 export type CardType = 'number' | 'skip' | 'reverse' | 'draw2' | 'wild' | 'wild_draw4';
 
@@ -27,13 +28,16 @@ export interface PublicGameState {
   currentPlayerIsAi: boolean;
   isGameOver: boolean;
   winner: string | null;
-  shoutedUno: boolean[];
-  isWildColorChoicePending: boolean;
+  isAwaitingColorChoice: boolean;
 }
 
 export interface AIMove {
   type: 'play' | 'draw';
   cardIndex?: number;
-  shoutUno?: boolean;
-  chosenColor?: 'red' | 'green' | 'blue' | 'yellow';
+  chosenColor?: CardColor;
+}
+
+export interface ChatMessage {
+  sender: string;
+  text: string;
 }
