@@ -1,0 +1,5 @@
+{
+  "name": "Gemini UNO",
+  "description": "A classic UNO card game where you play against AI opponents powered by the Gemini API. The app features a clean, modern interface with smooth animations.",
+  "requestFramePermissions": []
+}
